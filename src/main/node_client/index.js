@@ -1,7 +1,7 @@
 const StompJs = require('@stomp/stompjs');
-const SockJS = require('sockjs-client');
 const readline = require('readline');
-
+const WebSocket = require('ws');
+const SockJS = require('sockjs-client');
 const colors = [
     '#2196F3', '#32c787', '#00BCD4', '#ff5652',
     '#ffc107', '#ff85af', '#FF9800', '#39bbb0'
@@ -15,39 +15,63 @@ const rl = readline.createInterface({
     output: process.stdout
 });
 
-function connect() {
-    return new Promise((resolve) => {
-        rl.question('Enter your username: ', (name) => {
-            username = name.trim();
-            if (username) {
-                console.log('Connecting...');
-                const socket = new SockJS('http://localhost:8080/ws');
-                stompClient = StompJs.Stomp.over(socket);
-                stompClient.connect({}, onConnected, onError);
-            }
-            resolve();
+
+async function connect() {
+    try {
+        username = await new Promise((resolve) => {
+            rl.question('Enter your username: ', (name) => {
+                resolve(name.trim());
+            });
         });
-    });
-}
 
-function onConnected() {
-    console.log('Connected to WebSocket server');
+        if (!username) {
+            throw new Error('Username cannot be empty');
+        }
+        const socket = new SockJS('http://localhost:8080/ws?username=user&password=password');
+        console.log('Connecting...');
+        stompClient = new StompJs.Client({
+            webSocketFactory: () => socket,
+//            brokerURL: "",
+            connectHeaders: {
+                'X-username': 'user',
+                'X-password': 'password',
+                'login': 'user',
+                'passcode': 'password',
+            },
+            debug: function (str) {
+                console.log(str);
+            },
+            reconnectDelay: 5000,
+            heartbeatIncoming: 4000,
+            heartbeatOutgoing: 4000,
+        });
 
-    // Subscribe to the Public Topic
-    stompClient.subscribe('/topic/public', onMessageReceived);
+        stompClient.onConnect = function(frame) {
+            console.log('Connected: ' + frame);
+            console.log('Connected to WebSocket server');
 
-    // Tell your username to the server
-    stompClient.send("/app/chat.addUser",
-        {},
-        JSON.stringify({sender: username, type: 'JOIN'})
-    );
+            // Subscribe to the Public Topic
+            stompClient.subscribe('/topic/public', onMessageReceived);
 
-    startChat();
-}
+            // Tell your username to the server
+            stompClient.publish({
+                destination: "/app/chat.addUser",
+                body: JSON.stringify({sender: username, type: 'JOIN'})
+            });
 
-function onError(error) {
-    console.error('Could not connect to WebSocket server. Please try again!');
-    process.exit(1);
+            startChat();
+        };
+
+        stompClient.onStompError = function(error) {
+            console.error('Could not connect to WebSocket server. Please try again!');
+            process.exit(1);
+        };
+
+        await stompClient.activate();
+    } catch (error) {
+        console.error('Error during connection:', error);
+        process.exit(1);
+    }
 }
 
 function startChat() {
@@ -63,7 +87,10 @@ function sendMessage(messageContent) {
             content: messageContent,
             type: 'CHAT'
         };
-        stompClient.send("/app/chat.sendMessage", {}, JSON.stringify(chatMessage));
+        stompClient.publish({
+            destination: "/app/chat.sendMessage",
+            body: JSON.stringify(chatMessage)
+        });
     }
 }
 
@@ -98,6 +125,12 @@ function hexToRgb(hex) {
 }
 
 // Start the client
-connect().then(() => {
-    console.log('Chat client started. Type your messages and press Enter to send.');
-});
+(async function() {
+    try {
+        await connect();
+        console.log('Chat client started. Type your messages and press Enter to send.');
+    } catch (error) {
+        console.error('Failed to start chat client:', error);
+        process.exit(1);
+    }
+})();
